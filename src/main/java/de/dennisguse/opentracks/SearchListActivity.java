@@ -17,45 +17,37 @@
 package de.dennisguse.opentracks;
 
 import android.app.SearchManager;
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.SharedPreferences.OnSharedPreferenceChangeListener;
+import android.database.Cursor;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.Menu;
-import android.view.MenuItem;
 import android.view.View;
-import android.widget.ArrayAdapter;
 
 import androidx.annotation.NonNull;
+import androidx.cursoradapter.widget.ResourceCursorAdapter;
+import androidx.loader.app.LoaderManager;
+import androidx.loader.content.CursorLoader;
+import androidx.loader.content.Loader;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.SortedSet;
-
-import de.dennisguse.opentracks.content.SearchEngine;
-import de.dennisguse.opentracks.content.SearchEngine.ScoredResult;
-import de.dennisguse.opentracks.content.SearchEngine.SearchQuery;
-import de.dennisguse.opentracks.content.data.Marker;
+import de.dennisguse.opentracks.content.data.MarkerColumns;
 import de.dennisguse.opentracks.content.data.Track;
-import de.dennisguse.opentracks.content.provider.ContentProviderUtils;
+import de.dennisguse.opentracks.content.data.TracksColumns;
 import de.dennisguse.opentracks.databinding.SearchListBinding;
 import de.dennisguse.opentracks.fragments.ConfirmDeleteDialogFragment;
-import de.dennisguse.opentracks.fragments.DeleteMarkerDialogFragment;
 import de.dennisguse.opentracks.fragments.DeleteMarkerDialogFragment.DeleteMarkerCaller;
 import de.dennisguse.opentracks.services.TrackRecordingServiceConnection;
-import de.dennisguse.opentracks.stats.TrackStatistics;
 import de.dennisguse.opentracks.util.ActivityUtils;
 import de.dennisguse.opentracks.util.IntentUtils;
 import de.dennisguse.opentracks.util.ListItemUtils;
-import de.dennisguse.opentracks.util.MarkerUtils;
 import de.dennisguse.opentracks.util.PreferencesUtils;
 import de.dennisguse.opentracks.util.StringUtils;
 import de.dennisguse.opentracks.util.TrackIconUtils;
+import de.dennisguse.opentracks.util.TrackUtils;
 
 /**
  * An activity to display a list of searchable results.
@@ -68,32 +60,13 @@ public class SearchListActivity extends AbstractListActivity implements DeleteMa
 
     private static final String TAG = SearchListActivity.class.getSimpleName();
 
-    private static final String IS_RECORDING_FIELD = "isRecording";
-    private static final String IS_PAUSED_FIELD = "isPaused";
-    private static final String ICON_ID_FIELD = "icon";
-    private static final String ICON_CONTENT_DESCRIPTION_ID_FIELD = "iconContentDescription";
-    private static final String NAME_FIELD = "name";
-    private static final String TOTAL_TIME_FIELD = "totalTime";
-    private static final String TOTAL_DISTANCE_FIELD = "totalDistance";
-    private static final String MARKER_COUNT_FIELD = "markerCount";
-    private static final String START_TIME_FIELD = "startTime";
-    private static final String CATEGORY_FIELD = "category";
-    private static final String DESCRIPTION_FIELD = "description";
-    private static final String PHOTO_URL_FIELD = "photoUrl";
-    private static final String MARKER_LATITUDE_FIELD = "latitude";
-    private static final String MARKER_LONGITUDE_FIELD = "longitude";
-    private static final String TRACK_ID_FIELD = "trackId";
-    private static final String MARKER_ID_FIELD = "markerId";
-
-    private ContentProviderUtils contentProviderUtils;
-
     private SharedPreferences sharedPreferences;
 
     private TrackRecordingServiceConnection trackRecordingServiceConnection;
 
-    private SearchEngine searchEngine;
+    private SearchListBinding viewBinding;
 
-    private ArrayAdapter<Map<String, Object>> arrayAdapter;
+    private ResourceCursorAdapter resourceCursorAdapter;
 
     private boolean metricUnits = true;
 
@@ -101,42 +74,26 @@ public class SearchListActivity extends AbstractListActivity implements DeleteMa
 
     private boolean recordingTrackPaused;
 
-    private SearchListBinding viewBinding;
+    private LoaderManager.LoaderCallbacks<Cursor> loaderCallbacks;
 
     // Callback when an item is selected in the contextual action mode
     private final ContextualActionModeCallback contextualActionModeCallback = new ContextualActionModeCallback() {
         @Override
-        public void onPrepare(Menu menu, int[] positions, long[] ids, boolean showSelectAll) {
+        public void onPrepare(Menu menu, int[] positions, long[] databaseIds, boolean showSelectAll) {
             boolean isRecording = PreferencesUtils.isRecording(recordingTrackId);
             boolean isSingleSelection = positions.length == 1;
 
-            boolean isSingleSelectionTrack;
-            if (isSingleSelection) {
-                Map<String, Object> item = arrayAdapter.getItem(positions[0]);
-                isSingleSelectionTrack = item.get(MARKER_ID_FIELD) == null;
-            } else {
-                isSingleSelectionTrack = false;
-            }
+            // TODO We do not support sharing of markers yet
+            menu.findItem(R.id.list_context_menu_share).setVisible(false);
 
-            // Not recording, one item, item is a track
-            MenuItem shareMenuItem = menu.findItem(R.id.list_context_menu_share);
-            if (isSingleSelectionTrack) {
-                shareMenuItem.setVisible(!isRecording);
-            }
-
-            // One item, item is a marker
-            menu.findItem(R.id.list_context_menu_show_on_map).setVisible(isSingleSelection && !isSingleSelectionTrack);
-            // One item, can be a track or a marker
             menu.findItem(R.id.list_context_menu_edit).setVisible(isSingleSelection);
-            // One item. If track, no restriction.
-            menu.findItem(R.id.list_context_menu_delete).setVisible(isSingleSelection && isSingleSelectionTrack);
             // Disable select all, no action is available for multiple selection
             menu.findItem(R.id.list_context_menu_select_all).setVisible(false);
         }
 
         @Override
-        public boolean onClick(int itemId, int[] positions, long[] ids) {
-            return handleContextItem(itemId, positions);
+        public boolean onClick(int itemId, int[] positions, long[] databaseId) {
+            return handleContextItem(itemId, positions, databaseId);
         }
     };
 
@@ -153,7 +110,7 @@ public class SearchListActivity extends AbstractListActivity implements DeleteMa
                 recordingTrackPaused = PreferencesUtils.isRecordingTrackPaused(SearchListActivity.this);
             }
             if (key != null) {
-                runOnUiThread(() -> arrayAdapter.notifyDataSetChanged());
+                runOnUiThread(() -> resourceCursorAdapter.notifyDataSetChanged());
             }
         }
     };
@@ -165,53 +122,56 @@ public class SearchListActivity extends AbstractListActivity implements DeleteMa
 
         recordingTrackPaused = PreferencesUtils.isRecordingTrackPausedDefault(this);
 
-        contentProviderUtils = new ContentProviderUtils(this);
         sharedPreferences = PreferencesUtils.getSharedPreferences(this);
         trackRecordingServiceConnection = new TrackRecordingServiceConnection();
-        searchEngine = new SearchEngine(contentProviderUtils);
 
-        arrayAdapter = new ArrayAdapter<Map<String, Object>>(this, R.layout.list_item, R.id.list_item_name) {
-            @NonNull
+        resourceCursorAdapter = new ResourceCursorAdapter(this, R.layout.list_item, null, 0) {
+
             @Override
-            public View getView(int position, View convertView, @NonNull android.view.ViewGroup parent) {
-                View view = convertView;
-                if (convertView == null) {
-                    view = getLayoutInflater().inflate(R.layout.list_item, parent, false);
-                }
+            public void bindView(View view, Context context, Cursor cursor) {
+                int idIndex = cursor.getColumnIndexOrThrow(TracksColumns._ID);
+                int iconIndex = cursor.getColumnIndexOrThrow(TracksColumns.ICON);
+                int nameIndex = cursor.getColumnIndexOrThrow(TracksColumns.NAME);
+                int totalTimeIndex = cursor.getColumnIndexOrThrow(TracksColumns.TOTALTIME);
+                int totalDistanceIndex = cursor.getColumnIndexOrThrow(TracksColumns.TOTALDISTANCE);
+                int startTimeIndex = cursor.getColumnIndexOrThrow(TracksColumns.STARTTIME);
+                int categoryIndex = cursor.getColumnIndexOrThrow(TracksColumns.CATEGORY);
+                int descriptionIndex = cursor.getColumnIndexOrThrow(TracksColumns.DESCRIPTION);
+                int markerCountIndex = cursor.getColumnIndexOrThrow(TracksColumns.MARKER_COUNT);
 
-                Map<String, Object> resultMap = getItem(position);
-                boolean isRecording = (boolean) resultMap.get(IS_RECORDING_FIELD);
-                boolean isPaused = (boolean) resultMap.get(IS_PAUSED_FIELD);
-                int iconId = (int) resultMap.get(ICON_ID_FIELD);
-                int iconContentDescriptionId = (int) resultMap.get(ICON_CONTENT_DESCRIPTION_ID_FIELD);
-                String name = (String) resultMap.get(NAME_FIELD);
-                String totalTime = (String) resultMap.get(TOTAL_TIME_FIELD);
-                String totalDistance = (String) resultMap.get(TOTAL_DISTANCE_FIELD);
-                int markerCount = (int) resultMap.get(MARKER_COUNT_FIELD);
-                long startTime = (long) resultMap.get(START_TIME_FIELD);
-                String category = (String) resultMap.get(CATEGORY_FIELD);
-                String description = (String) resultMap.get(DESCRIPTION_FIELD);
-                String photoUrl = (String) resultMap.get(PHOTO_URL_FIELD);
+                Track.Id trackId = new Track.Id(cursor.getLong(idIndex));
+                boolean isRecording = trackId.equals(recordingTrackId);
+                String icon = cursor.getString(iconIndex);
+                int iconId = TrackIconUtils.getIconDrawable(icon);
+                String name = cursor.getString(nameIndex);
+                String totalTime = StringUtils.formatElapsedTime(cursor.getLong(totalTimeIndex));
+                String totalDistance = StringUtils.formatDistance(SearchListActivity.this, cursor.getDouble(totalDistanceIndex), metricUnits);
+                int markerCount = cursor.getInt(markerCountIndex);
+                long startTime = cursor.getLong(startTimeIndex);
+                String category = icon != null && !icon.equals("") ? null : cursor.getString(categoryIndex);
+                String description = cursor.getString(descriptionIndex);
 
+                String photoUrl = "";
+                int iconContentDescriptionId = R.string.image_track;
+                boolean isPaused = false;
                 ListItemUtils.setListItem(SearchListActivity.this, view, isRecording, isPaused, iconId,
                         iconContentDescriptionId, name, totalTime, totalDistance, markerCount,
                         startTime, false, category, description, photoUrl);
-                return view;
             }
         };
         // UI elements
         viewBinding.searchList.setEmptyView(viewBinding.searchListEmpty);
-        viewBinding.searchList.setAdapter(arrayAdapter);
+        viewBinding.searchList.setAdapter(resourceCursorAdapter);
+        //TODO
         viewBinding.searchList.setOnItemClickListener((parent, view, position, id) -> {
-            Map<String, Object> item = arrayAdapter.getItem(position);
-            Track.Id trackId = (Track.Id) item.get(TRACK_ID_FIELD);
-            Marker.Id markerId = (Marker.Id) item.get(MARKER_ID_FIELD);
+//            Cursor data = (Cursor) resourceCursorAdapter.getItem(position);
+
             Intent intent = IntentUtils.newIntent(SearchListActivity.this, TrackRecordedActivity.class);
-            if (markerId != null) {
-                intent = intent.putExtra(TrackRecordedActivity.EXTRA_MARKER_ID, markerId);
-            } else {
-                intent = intent.putExtra(TrackRecordedActivity.EXTRA_TRACK_ID, trackId);
-            }
+//            if (markerId != null) {
+//                intent = intent.putExtra(TrackRecordedActivity.EXTRA_MARKER_ID, new Marker.Id(markerId));
+//            } else {
+            intent = intent.putExtra(TrackRecordedActivity.EXTRA_TRACK_ID, new Track.Id(id));
+//            }
             startActivity(intent);
         });
         ActivityUtils.configureListViewContextualMenu(viewBinding.searchList, contextualActionModeCallback);
@@ -229,7 +189,7 @@ public class SearchListActivity extends AbstractListActivity implements DeleteMa
     @Override
     protected void onResume() {
         super.onResume();
-        arrayAdapter.notifyDataSetChanged();
+        LoaderManager.getInstance(this).restartLoader(0, null, loaderCallbacks);
     }
 
     @Override
@@ -267,42 +227,42 @@ public class SearchListActivity extends AbstractListActivity implements DeleteMa
      * @param positions the positions of the selected rows
      * @return true if handled.
      */
-    private boolean handleContextItem(int itemId, int[] positions) {
-        if (positions.length != 1) {
-            return false;
-        }
-        Map<String, Object> item = arrayAdapter.getItem(positions[0]);
-        Track.Id trackId = (Track.Id) item.get(TRACK_ID_FIELD);
-        Marker.Id markerId = (Marker.Id) item.get(MARKER_ID_FIELD);
+    private boolean handleContextItem(int itemId, int[] positions, long[] databaseIds) {
+        Cursor cursor = (Cursor) resourceCursorAdapter.getItem(positions[0]);
         Intent intent;
         switch (itemId) {
             case R.id.list_context_menu_show_on_map:
-                IntentUtils.showCoordinateOnMap(this, (double) item.get(MARKER_LATITUDE_FIELD), (double) item.get(MARKER_LONGITUDE_FIELD), item.get(NAME_FIELD) + "");
+                //TODO Support tracks and markers
+//                IntentDashboardUtils.startDashboard(this, false, trackIds);
+//                IntentUtils.showCoordinateOnMap(this, (double) item.get(MARKER_LATITUDE_FIELD), (double) item.get(MARKER_LONGITUDE_FIELD), item.get(NAME_FIELD) + "");
                 return true;
             case R.id.list_context_menu_share:
-                intent = IntentUtils.newShareFileIntent(this, trackId);
-                intent = Intent.createChooser(intent, null);
-                startActivity(intent);
+                // TODO Not supported for markers
+//                intent = IntentUtils.newShareFileIntent(this, trackId);
+//                intent = Intent.createChooser(intent, null);
+//                startActivity(intent);
                 return true;
             case R.id.list_context_menu_edit:
-                if (markerId != null) {
-                    intent = IntentUtils.newIntent(this, MarkerEditActivity.class)
-                            .putExtra(MarkerEditActivity.EXTRA_MARKER_ID, markerId);
-                } else {
-                    intent = IntentUtils.newIntent(this, TrackEditActivity.class)
-                            .putExtra(TrackEditActivity.EXTRA_TRACK_ID, trackId);
-                }
-                startActivity(intent);
+//                if (markerId != null) {
+//                    intent = IntentUtils.newIntent(this, MarkerEditActivity.class)
+//                            .putExtra(MarkerEditActivity.EXTRA_MARKER_ID, markerId);
+//                } else {
+//                    intent = IntentUtils.newIntent(this, TrackEditActivity.class)
+//                            .putExtra(TrackEditActivity.EXTRA_TRACK_ID, trackId);
+//                }
+//                startActivity(intent);
 
+                //TODO Requery results
                 // Close the searchable result since its content can change after edit.
                 finish();
                 return true;
             case R.id.list_context_menu_delete:
-                if (markerId != null) {
-                    DeleteMarkerDialogFragment.showDialog(getSupportFragmentManager(), markerId);
-                } else {
-                    deleteTracks(trackId);
-                }
+                //TODO We need a joint marker and track deletion dialog
+//                if (markerId != null) {
+//                    DeleteMarkerDialogFragment.showDialog(getSupportFragmentManager(), markerId);
+//                } else {
+//                    deleteTracks(trackId);
+//                }
                 return true;
             default:
                 return false;
@@ -327,106 +287,42 @@ public class SearchListActivity extends AbstractListActivity implements DeleteMa
         doSearch(textQuery);
     }
 
-    /**
-     * Do the searchable.
-     *
-     * @param textQuery the query
-     */
     private void doSearch(String textQuery) {
-        SearchQuery query = new SearchQuery(textQuery, null, null, System.currentTimeMillis());
-        SortedSet<ScoredResult> scoredResults = searchEngine.search(query);
-        final List<Map<String, Object>> displayResults = prepareResultsforDisplay(scoredResults);
+        final String[] PROJECTION = new String[]{TracksColumns._ID, TracksColumns.NAME,
+                TracksColumns.DESCRIPTION, TracksColumns.CATEGORY, TracksColumns.STARTTIME,
+                TracksColumns.TOTALDISTANCE, TracksColumns.TOTALTIME, TracksColumns.ICON, TracksColumns.MARKER_COUNT};
 
-        // Use the UI thread to display the results
-        runOnUiThread(() -> {
-            arrayAdapter.clear();
-            arrayAdapter.addAll(displayResults);
-        });
-    }
+        final String TRACK_SELECTION_QUERY =
+                TracksColumns.NAME + " LIKE ? OR " +
+                        TracksColumns.DESCRIPTION + " LIKE ? OR " +
+                        TracksColumns.CATEGORY + " LIKE ?";
 
-    /**
-     * Prepares the result for display.
-     *
-     * @param scoredResults a list of score results
-     * @return a list of result maps
-     */
-    private List<Map<String, Object>> prepareResultsforDisplay(Collection<ScoredResult> scoredResults) {
-        //TODO Replace use of map<string, object>, but rather provide Track or Marker directly.
-        ArrayList<Map<String, Object>> output = new ArrayList<>(scoredResults.size());
-        for (ScoredResult result : scoredResults) {
-            if (result.track != null) {
-                output.add(prepareTrackForDisplay(result.track));
-            } else {
-                output.add(prepareMarkerForDisplay(result.marker));
+        final String MARKER_SELECTION_QUERY =
+                MarkerColumns.NAME + " LIKE ? OR " +
+                        MarkerColumns.DESCRIPTION + " LIKE ? OR " +
+                        MarkerColumns.CATEGORY + " LIKE ?";
+
+        String textQueryWildcard = "%" + textQuery + "%";
+        final String[] selectionArgs = new String[]{textQueryWildcard, textQueryWildcard, textQueryWildcard};
+
+        loaderCallbacks = new LoaderManager.LoaderCallbacks<Cursor>() {
+            @NonNull
+            @Override
+            public Loader<Cursor> onCreateLoader(int arg0, Bundle arg1) {
+                return new CursorLoader(SearchListActivity.this, TracksColumns.CONTENT_URI, PROJECTION, TRACK_SELECTION_QUERY, selectionArgs, TrackUtils.TRACK_SORT_ORDER);
             }
-        }
-        return output;
-    }
 
-    private Map<String, Object> prepareMarkerForDisplay(Marker marker) {
-        Map<String, Object> resultMap = new HashMap<>();
-
-        //TODO: It may be more appropriate to obtain the track name as a join in the retrieval phase of the searchable.
-        String trackName = null;
-        Track.Id trackId = marker.getTrackId();
-        if (!trackId.isValid()) {
-            Track track = contentProviderUtils.getTrack(trackId);
-            if (track != null) {
-                trackName = track.getName();
+            @Override
+            public void onLoadFinished(@NonNull Loader<Cursor> loader, Cursor cursor) {
+                resourceCursorAdapter.swapCursor(cursor);
             }
-        }
 
-        resultMap.put(IS_RECORDING_FIELD, false);
-        resultMap.put(IS_PAUSED_FIELD, true);
-        resultMap.put(ICON_ID_FIELD, MarkerUtils.ICON_ID);
-        resultMap.put(ICON_CONTENT_DESCRIPTION_ID_FIELD, R.string.image_marker);
-        resultMap.put(NAME_FIELD, marker.getName());
-        // Display the marker's track name in the total time field
-        resultMap.put(TOTAL_TIME_FIELD, trackName == null ? null : getString(R.string.search_list_marker_track_location, trackName));
-        resultMap.put(TOTAL_DISTANCE_FIELD, null);
-        resultMap.put(MARKER_COUNT_FIELD, 0);
-        resultMap.put(START_TIME_FIELD, marker.getLocation().getTime());
-        resultMap.put(CATEGORY_FIELD, marker.getCategory());
-        resultMap.put(DESCRIPTION_FIELD, marker.getDescription());
-        resultMap.put(PHOTO_URL_FIELD, marker.getPhotoUrl());
-        resultMap.put(TRACK_ID_FIELD, marker.getTrackId());
-        resultMap.put(MARKER_ID_FIELD, marker.getId());
-
-        resultMap.put(MARKER_LATITUDE_FIELD, marker.getLocation().getLatitude());
-        resultMap.put(MARKER_LONGITUDE_FIELD, marker.getLocation().getLongitude());
-
-        return resultMap;
-    }
-
-    /**
-     * Prepares a track for display by filling in a result map.
-     *
-     * @param track the track
-     * @return the result map
-     */
-    private Map<String, Object> prepareTrackForDisplay(Track track) {
-        Map<String, Object> resultMap = new HashMap<>();
-
-        TrackStatistics trackStatistics = track.getTrackStatistics();
-        String icon = track.getIcon();
-        String category = icon != null && !icon.equals("") ? null : track.getCategory();
-
-        resultMap.put(IS_RECORDING_FIELD, track.getId().equals(recordingTrackId));
-        resultMap.put(IS_PAUSED_FIELD, recordingTrackPaused);
-        resultMap.put(ICON_ID_FIELD, TrackIconUtils.getIconDrawable(icon));
-        resultMap.put(ICON_CONTENT_DESCRIPTION_ID_FIELD, R.string.image_track);
-        resultMap.put(NAME_FIELD, track.getName());
-        resultMap.put(TOTAL_TIME_FIELD, StringUtils.formatElapsedTime(trackStatistics.getTotalTime()));
-        resultMap.put(TOTAL_DISTANCE_FIELD, StringUtils.formatDistance(this, trackStatistics.getTotalDistance(), metricUnits));
-        resultMap.put(MARKER_COUNT_FIELD, contentProviderUtils.getMarkerCount(track.getId()));
-        resultMap.put(START_TIME_FIELD, trackStatistics.getStartTime_ms());
-        resultMap.put(CATEGORY_FIELD, category);
-        resultMap.put(DESCRIPTION_FIELD, track.getDescription());
-        resultMap.put(PHOTO_URL_FIELD, null);
-        resultMap.put(TRACK_ID_FIELD, track.getId());
-        resultMap.put(MARKER_ID_FIELD, null);
-
-        return resultMap;
+            @Override
+            public void onLoaderReset(@NonNull Loader<Cursor> loader) {
+                resourceCursorAdapter.swapCursor(null);
+            }
+        };
+        LoaderManager.getInstance(this).initLoader(0, null, loaderCallbacks);
     }
 
     @Override
