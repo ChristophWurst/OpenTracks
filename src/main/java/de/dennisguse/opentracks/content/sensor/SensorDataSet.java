@@ -75,7 +75,7 @@ public final class SensorDataSet {
                 + (getCyclingPower() != null ? " " + getCyclingPower() : "");
     }
 
-    private void set(SensorData type, SensorData data) {
+    private void set(@NonNull SensorData type, SensorData data) {
         if (type instanceof SensorDataHeartRate) {
             this.heartRate = (SensorDataHeartRate) data;
             return;
@@ -90,11 +90,11 @@ public final class SensorDataSet {
             return;
         }
 
-        if (data instanceof SensorDataCyclingPower) {
+        if (type instanceof SensorDataCyclingPower) {
             this.cyclingPower = (SensorDataCyclingPower) data;
             return;
         }
 
-        throw new UnsupportedOperationException();
+        throw new UnsupportedOperationException(type.getClass().getCanonicalName());
     }
 }

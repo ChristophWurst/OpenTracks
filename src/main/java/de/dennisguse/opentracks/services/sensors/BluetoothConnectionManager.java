@@ -89,8 +89,14 @@ public abstract class BluetoothConnectionManager {
 
             // Register for updates.
             BluetoothGattDescriptor descriptor = characteristic.getDescriptor(BluetoothUtils.CLIENT_CHARACTERISTIC_CONFIG_UUID);
+            if (descriptor == null) {
+                Log.e(TAG, "CLIENT_CHARACTERISTIC_CONFIG_UUID characteristic not available; cannot request notifications for changed data.");
+                return;
+            }
+
             descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
             gatt.writeDescriptor(descriptor);
+
         }
 
         @Override
@@ -223,7 +229,7 @@ public abstract class BluetoothConnectionManager {
     public static class CyclingPower extends BluetoothConnectionManager {
 
         CyclingPower(@NonNull SensorDataObserver observer) {
-            super(BluetoothUtils.CYCLING_POWER_UUID, BluetoothUtils.CYCLING_SPEED_CADENCE_MEASUREMENT_CHAR_UUID, observer);
+            super(BluetoothUtils.CYCLING_POWER_UUID, BluetoothUtils.CYCLING_POWER_MEASUREMENT_CHAR_UUID, observer);
         }
 
         @Override

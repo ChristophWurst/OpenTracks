@@ -19,3 +19,10 @@ However, often only one value is provided.
 * Wahoo Cadence (Model: WFPODCAD2)
   This sensor reports cadence data as speed.
   A workaround is in place. 
+
+## Cycling Power Measurement
+
+We only support _Instantaneous Power_.
+
+* QUARQ Red DZero Powermeter
+* Wahoo Kickr v4.0
