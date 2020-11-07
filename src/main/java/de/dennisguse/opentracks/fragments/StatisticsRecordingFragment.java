@@ -272,14 +272,13 @@ public class StatisticsRecordingFragment extends Fragment implements TrackDataLi
         } else {
             SensorDataSet sensorDataSet = trackRecordingService.getSensorData();
             if (sensorDataSet != null) {
-
                 setHeartRateSensorData(sensorDataSet);
                 setCadenceSensorData(sensorDataSet);
                 setPowerSensorData(sensorDataSet);
                 setSpeedSensorData(sensorDataSet);
             }
+            setTotalElevationGain(trackRecordingService.getElevationGain_m());
         }
-        setTotalElevationGain(trackRecordingService.getElevationGain_m());
     }
 
     private void setHeartRateSensorData(SensorDataSet sensorDataSet) {
